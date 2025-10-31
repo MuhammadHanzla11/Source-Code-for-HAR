@@ -1,0 +1,226 @@
+import cv2
+import numpy as np
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
+from torchvision.models import resnet50, ResNet50_Weights
+
+class HumanDetectorCNN:
+    """
+    CNN-based human detection and segmentation module
+    """
+    
+    def __init__(self, confidence_threshold=0.5, device='cuda'):
+        """
+        Initialize human detector
+        
+        Args:
+            confidence_threshold: Minimum confidence for detection
+            device: Device to run model on ('cuda' or 'cpu')
+        """
+        self.confidence_threshold = confidence_threshold
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        
+        # Load pre-trained model for human detection
+        # Using YOLO-style detection or can use other detection models
+        self.model = self._load_detection_model()
+        
+    def _load_detection_model(self):
+        """
+        Load pre-trained CNN model for human detection
+        """
+        # For demonstration, using a simple CNN architecture
+        # In practice, use YOLO, Faster R-CNN, or similar
+        model = HumanDetectionNet()
+        model.to(self.device)
+        model.eval()
+        return model
+    
+    def detect_humans(self, frame):
+        """
+        Detect humans in a frame
+        
+        Args:
+            frame: Input grayscale or RGB frame
+            
+        Returns:
+            List of bounding boxes [(x, y, w, h), ...]
+        """
+        # Prepare frame for detection
+        if len(frame.shape) == 2:  # Grayscale
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        else:
+            frame_rgb = frame
+        
+        # Resize and normalize
+        input_tensor = self._preprocess_frame(frame_rgb)
+        
+        # Run detection
+        with torch.no_grad():
+            detections = self.model(input_tensor)
+        
+        # Post-process detections
+        bboxes = self._postprocess_detections(detections, frame.shape)
+        
+        return bboxes
+    
+    def _preprocess_frame(self, frame):
+        """
+        Preprocess frame for CNN input
+        """
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((416, 416)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+        
+        input_tensor = transform(frame)
+        input_tensor = input_tensor.unsqueeze(0).to(self.device)
+        return input_tensor
+    
+    def _postprocess_detections(self, detections, frame_shape):
+        """
+        Post-process model outputs to get bounding boxes
+        """
+        # This is a placeholder for actual detection post-processing
+        # In practice, implement NMS and threshold filtering
+        bboxes = []
+        
+        # Example: Extract bounding boxes from detection output
+        # Format: [(x, y, w, h, confidence), ...]
+        
+        return bboxes
+    
+    def segment_human(self, frame, bbox):
+        """
+        Segment human region from frame using bounding box
+        
+        Args:
+            frame: Input frame
+            bbox: Bounding box (x, y, w, h)
+            
+        Returns:
+            Segmented human region
+        """
+        x, y, w, h = bbox
+        
+        # Extract ROI
+        human_roi = frame[y:y+h, x:x+w]
+        
+        # Apply segmentation (simple method: using GrabCut or mask)
+        mask = self._apply_grabcut_segmentation(frame, bbox)
+        
+        # Apply mask
+        segmented = cv2.bitwise_and(human_roi, human_roi, mask=mask[y:y+h, x:x+w])
+        
+        return segmented, mask
+    
+    def _apply_grabcut_segmentation(self, frame, bbox):
+        """
+        Apply GrabCut algorithm for foreground segmentation
+        """
+        mask = np.zeros(frame.shape[:2], np.uint8)
+        bgd_model = np.zeros((1, 65), np.float64)
+        fgd_model = np.zeros((1, 65), np.float64)
+        
+        rect = bbox  # (x, y, w, h)
+        
+        # Apply GrabCut
+        cv2.grabCut(frame, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+        
+        # Modify mask
+        mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+        
+        return mask2
+    
+    def detect_and_segment(self, frames):
+        """
+        Complete detection and segmentation pipeline
+        
+        Args:
+            frames: List of preprocessed frames
+            
+        Returns:
+            List of segmented humans with bounding boxes
+        """
+        results = []
+        
+        print("Detecting and segmenting humans...")
+        
+        for idx, frame in enumerate(frames):
+            # Detect humans
+            bboxes = self.detect_humans(frame)
+            
+            frame_results = []
+            for bbox in bboxes:
+                # Segment each detected human
+                segmented, mask = self.segment_human(frame, bbox)
+                
+                frame_results.append({
+                    'bbox': bbox,
+                    'segmented': segmented,
+                    'mask': mask
+                })
+            
+            results.append(frame_results)
+            
+            if (idx + 1) % 10 == 0:
+                print(f"Processed {idx + 1}/{len(frames)} frames")
+        
+        print("Detection and segmentation complete")
+        return results
+
+
+class HumanDetectionNet(nn.Module):
+    """
+    Simple CNN architecture for human detection
+    In practice, use YOLO, Faster R-CNN, or similar pre-trained models
+    """
+    
+    def __init__(self):
+        super(HumanDetectionNet, self).__init__()
+        
+        # Using ResNet50 backbone
+        self.backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
+        
+        # Detection head
+        self.detection_head = nn.Sequential(
+            nn.Conv2d(2048, 512, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(512, 256, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(256, 5, 1)  # 5 outputs: (x, y, w, h, confidence)
+        )
+        
+    def forward(self, x):
+        # Extract features
+        features = self.backbone.conv1(x)
+        features = self.backbone.bn1(features)
+        features = self.backbone.relu(features)
+        features = self.backbone.maxpool(features)
+        
+        features = self.backbone.layer1(features)
+        features = self.backbone.layer2(features)
+        features = self.backbone.layer3(features)
+        features = self.backbone.layer4(features)
+        
+        # Detection
+        detections = self.detection_head(features)
+        
+        return detections
+
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize detector
+    detector = HumanDetectorCNN(confidence_threshold=0.5, device='cuda')
+    
+    # Load preprocessed frames
+    frames = []  # Load from previous module
+    
+    # Detect and segment humans
+    detection_results = detector.detect_and_segment(frames)
+    
+    print(f"Detection completed for {len(detection_results)} frames")

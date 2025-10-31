@@ -1,0 +1,325 @@
+import numpy as np
+import cv2
+from scipy.spatial.distance import euclidean
+from skimage.feature import hog
+
+class FeatureExtractor:
+    """
+    Extract multiple features from skeletal data:
+    - Joint angles
+    - Linear displacements
+    - Velocities
+    - Fiducial points
+    - Geodesic distances
+    - Histograms of Oriented Gradients (HOG)
+    """
+    
+    def __init__(self):
+        """
+        Initialize feature extractor
+        """
+        # Define joint triplets for angle calculation
+        self.joint_triplets = [
+            (5, 7, 9),   # Left arm: shoulder-elbow-wrist
+            (6, 8, 10),  # Right arm: shoulder-elbow-wrist
+            (11, 13, 15),  # Left leg: hip-knee-ankle
+            (12, 14, 16),  # Right leg: hip-knee-ankle
+            (5, 11, 13),  # Left torso: shoulder-hip-knee
+            (6, 12, 14),  # Right torso: shoulder-hip-knee
+        ]
+        
+        # Define key joint pairs for geodesic distances
+        self.geodesic_pairs = [
+            (0, 15), (0, 16),  # Nose to ankles
+            (9, 16), (10, 15),  # Wrists to opposite ankles
+            (5, 16), (6, 15),   # Shoulders to opposite ankles
+        ]
+    
+    def calculate_joint_angles(self, keypoints):
+        """
+        Calculate angles at various joints
+        
+        Args:
+            keypoints: Array of keypoints (17, 3)
+            
+        Returns:
+            Array of joint angles
+        """
+        angles = []
+        
+        for triplet in self.joint_triplets:
+            p1_idx, p2_idx, p3_idx = triplet
+            
+            # Check if all keypoints are visible
+            if (keypoints[p1_idx, 2] > 0.3 and 
+                keypoints[p2_idx, 2] > 0.3 and 
+                keypoints[p3_idx, 2] > 0.3):
+                
+                p1 = keypoints[p1_idx, :2]
+                p2 = keypoints[p2_idx, :2]
+                p3 = keypoints[p3_idx, :2]
+                
+                # Calculate angle using vectors
+                v1 = p1 - p2
+                v2 = p3 - p2
+                
+                # Calculate angle
+                cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6)
+                cos_angle = np.clip(cos_angle, -1.0, 1.0)
+                angle = np.arccos(cos_angle)
+                angle_degrees = np.degrees(angle)
+                
+                angles.append(angle_degrees)
+            else:
+                angles.append(0.0)  # Missing keypoint
+        
+        return np.array(angles)
+    
+    def calculate_linear_displacements(self, current_keypoints, previous_keypoints):
+        """
+        Calculate linear displacement of keypoints between frames
+        
+        Args:
+            current_keypoints: Current frame keypoints (17, 3)
+            previous_keypoints: Previous frame keypoints (17, 3)
+            
+        Returns:
+            Array of displacements for each keypoint
+        """
+        displacements = []
+        
+        for i in range(17):
+            if (current_keypoints[i, 2] > 0.3 and 
+                previous_keypoints[i, 2] > 0.3):
+                
+                curr_pos = current_keypoints[i, :2]
+                prev_pos = previous_keypoints[i, :2]
+                
+                displacement = np.linalg.norm(curr_pos - prev_pos)
+                displacements.append(displacement)
+            else:
+                displacements.append(0.0)
+        
+        return np.array(displacements)
+    
+    def calculate_velocities(self, displacements, time_delta=1.0):
+        """
+        Calculate velocities from displacements
+        
+        Args:
+            displacements: Array of displacements
+            time_delta: Time difference between frames
+            
+        Returns:
+            Array of velocities
+        """
+        velocities = displacements / time_delta
+        return velocities
+    
+    def extract_fiducial_points(self, keypoints):
+        """
+        Extract fiducial (key reference) points
+        
+        Args:
+            keypoints: Array of keypoints (17, 3)
+            
+        Returns:
+            Flattened array of fiducial point coordinates
+        """
+        # Select important keypoints as fiducial points
+        fiducial_indices = [0, 5, 6, 9, 10, 11, 12, 15, 16]  # Key body points
+        
+        fiducial_points = []
+        for idx in fiducial_indices:
+            if keypoints[idx, 2] > 0.3:
+                fiducial_points.extend(keypoints[idx, :2])
+            else:
+                fiducial_points.extend([0.0, 0.0])
+        
+        return np.array(fiducial_points)
+    
+    def calculate_geodesic_distances(self, keypoints):
+        """
+        Calculate geodesic distances between key body parts
+        
+        Args:
+            keypoints: Array of keypoints (17, 3)
+            
+        Returns:
+            Array of geodesic distances
+        """
+        distances = []
+        
+        for pair in self.geodesic_pairs:
+            p1_idx, p2_idx = pair
+            
+            if (keypoints[p1_idx, 2] > 0.3 and 
+                keypoints[p2_idx, 2] > 0.3):
+                
+                p1 = keypoints[p1_idx, :2]
+                p2 = keypoints[p2_idx, :2]
+                
+                distance = euclidean(p1, p2)
+                distances.append(distance)
+            else:
+                distances.append(0.0)
+        
+        return np.array(distances)
+    
+    def extract_hog_features(self, image, orientations=9, pixels_per_cell=(8, 8), 
+                            cells_per_block=(2, 2)):
+        """
+        Extract Histogram of Oriented Gradients (HOG) features
+        
+        Args:
+            image: Input image
+            orientations: Number of orientation bins
+            pixels_per_cell: Size of cell
+            cells_per_block: Number of cells per block
+            
+        Returns:
+            HOG feature vector
+        """
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        
+        # Resize to standard size
+        resized = cv2.resize(gray, (128, 256))
+        
+        # Extract HOG features
+        features = hog(resized, 
+                      orientations=orientations,
+                      pixels_per_cell=pixels_per_cell,
+                      cells_per_block=cells_per_block,
+                      visualize=False,
+                      feature_vector=True)
+        
+        return features
+    
+    def extract_all_features(self, skeleton_sequence, image_sequence, fps=10):
+        """
+        Extract all features from a sequence of skeletons and images
+        
+        Args:
+            skeleton_sequence: List of skeleton data for each frame
+            image_sequence: List of corresponding images
+            fps: Frames per second (for velocity calculation)
+            
+        Returns:
+            Dictionary containing all extracted features
+        """
+        num_frames = len(skeleton_sequence)
+        time_delta = 1.0 / fps
+        
+        all_features = {
+            'joint_angles': [],
+            'displacements': [],
+            'velocities': [],
+            'fiducial_points': [],
+            'geodesic_distances': [],
+            'hog_features': []
+        }
+        
+        print("Extracting features from skeleton sequence...")
+        
+        for frame_idx in range(num_frames):
+            frame_skeletons = skeleton_sequence[frame_idx]
+            
+            if len(frame_skeletons) == 0:
+                continue
+            
+            # Process first detected person (can be extended for multiple persons)
+            skeleton = frame_skeletons[0]
+            keypoints = skeleton['keypoints']
+            
+            # 1. Joint angles
+            angles = self.calculate_joint_angles(keypoints)
+            all_features['joint_angles'].append(angles)
+            
+            # 2. Linear displacements and velocities
+            if frame_idx > 0:
+                prev_skeleton = skeleton_sequence[frame_idx - 1][0]
+                prev_keypoints = prev_skeleton['keypoints']
+                
+                displacements = self.calculate_linear_displacements(keypoints, prev_keypoints)
+                velocities = self.calculate_velocities(displacements, time_delta)
+                
+                all_features['displacements'].append(displacements)
+                all_features['velocities'].append(velocities)
+            else:
+                all_features['displacements'].append(np.zeros(17))
+                all_features['velocities'].append(np.zeros(17))
+            
+            # 3. Fiducial points
+            fiducial = self.extract_fiducial_points(keypoints)
+            all_features['fiducial_points'].append(fiducial)
+            
+            # 4. Geodesic distances
+            geodesic = self.calculate_geodesic_distances(keypoints)
+            all_features['geodesic_distances'].append(geodesic)
+            
+            # 5. HOG features
+            image = image_sequence[frame_idx]
+            hog_feat = self.extract_hog_features(image)
+            all_features['hog_features'].append(hog_feat)
+        
+        # Convert lists to arrays
+        for key in all_features:
+            if len(all_features[key]) > 0:
+                all_features[key] = np.array(all_features[key])
+        
+        print(f"Feature extraction complete for {num_frames} frames")
+        return all_features
+    
+    def create_feature_vector(self, features):
+        """
+        Combine all features into a single feature vector
+        
+        Args:
+            features: Dictionary of all extracted features
+            
+        Returns:
+            Concatenated feature vector
+        """
+        feature_list = []
+        
+        for key in ['joint_angles', 'displacements', 'velocities', 
+                    'fiducial_points', 'geodesic_distances', 'hog_features']:
+            if key in features and len(features[key]) > 0:
+                # Flatten temporal dimension if needed
+                feat = features[key]
+                if len(feat.shape) > 1:
+                    feat = feat.flatten()
+                feature_list.append(feat)
+        
+        # Concatenate all features
+        combined_features = np.concatenate(feature_list)
+        
+        return combined_features
+
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize feature extractor
+    extractor = FeatureExtractor()
+    
+    # Load skeleton sequence and images
+    skeleton_sequence = []  # Load from skeleton extraction module
+    image_sequence = []  # Load corresponding images
+    
+    # Extract all features
+    features = extractor.extract_all_features(
+        skeleton_sequence, 
+        image_sequence, 
+        fps=10
+    )
+    
+    # Create combined feature vector
+    feature_vector = extractor.create_feature_vector(features)
+    
+    print(f"Combined feature vector shape: {feature_vector.shape}")
+    print(f"Joint angles shape: {features['joint_angles'].shape}")
+    print(f"HOG features shape: {features['hog_features'].shape}")

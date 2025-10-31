@@ -1,0 +1,139 @@
+import cv2
+import numpy as np
+import os
+
+class VideoPreprocessor:
+    """
+    Module for video frame division and preprocessing using bilateral filtering
+    """
+    
+    def __init__(self, video_path, output_dir='frames'):
+        """
+        Initialize video preprocessor
+        
+        Args:
+            video_path: Path to input video file
+            output_dir: Directory to save processed frames
+        """
+        self.video_path = video_path
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        
+    def extract_frames(self, fps=None):
+        """
+        Extract frames from video
+        
+        Args:
+            fps: Frames per second to extract (None = all frames)
+        
+        Returns:
+            List of extracted frames
+        """
+        cap = cv2.VideoCapture(self.video_path)
+        frames = []
+        frame_count = 0
+        
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        skip_frames = 1 if fps is None else int(video_fps / fps)
+        
+        print(f"Extracting frames from video...")
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            if frame_count % skip_frames == 0:
+                frames.append(frame)
+                
+            frame_count += 1
+        
+        cap.release()
+        print(f"Extracted {len(frames)} frames")
+        return frames
+    
+    def apply_bilateral_filter(self, frame, d=9, sigma_color=75, sigma_space=75):
+        """
+        Apply bilateral filtering to enhance foreground while minimizing background distortion
+        
+        Args:
+            frame: Input frame
+            d: Diameter of pixel neighborhood
+            sigma_color: Filter sigma in color space
+            sigma_space: Filter sigma in coordinate space
+            
+        Returns:
+            Filtered frame
+        """
+        filtered = cv2.bilateralFilter(frame, d, sigma_color, sigma_space)
+        return filtered
+    
+    def rgb_to_grayscale(self, frame):
+        """
+        Convert RGB frame to grayscale
+        
+        Args:
+            frame: Input RGB frame
+            
+        Returns:
+            Grayscale frame
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return gray
+    
+    def preprocess_video(self, fps=10, save_frames=True):
+        """
+        Complete preprocessing pipeline
+        
+        Args:
+            fps: Frames per second to extract
+            save_frames: Whether to save processed frames
+            
+        Returns:
+            Dictionary containing original, filtered, and grayscale frames
+        """
+        # Extract frames
+        frames = self.extract_frames(fps=fps)
+        
+        processed_data = {
+            'original': [],
+            'filtered': [],
+            'grayscale': []
+        }
+        
+        print("Applying bilateral filtering and grayscale conversion...")
+        
+        for idx, frame in enumerate(frames):
+            # Apply bilateral filter
+            filtered_frame = self.apply_bilateral_filter(frame)
+            
+            # Convert to grayscale
+            gray_frame = self.rgb_to_grayscale(filtered_frame)
+            
+            # Store results
+            processed_data['original'].append(frame)
+            processed_data['filtered'].append(filtered_frame)
+            processed_data['grayscale'].append(gray_frame)
+            
+            # Save frames if requested
+            if save_frames:
+                cv2.imwrite(f"{self.output_dir}/frame_{idx:04d}_original.jpg", frame)
+                cv2.imwrite(f"{self.output_dir}/frame_{idx:04d}_filtered.jpg", filtered_frame)
+                cv2.imwrite(f"{self.output_dir}/frame_{idx:04d}_gray.jpg", gray_frame)
+        
+        print(f"Preprocessing complete. Processed {len(frames)} frames")
+        return processed_data
+
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize preprocessor
+    preprocessor = VideoPreprocessor(
+        video_path="uav_video.mp4",
+        output_dir="preprocessed_frames"
+    )
+    
+    # Run preprocessing pipeline
+    processed_data = preprocessor.preprocess_video(fps=10, save_frames=True)
+    
+    print(f"Total frames processed: {len(processed_data['original'])}")

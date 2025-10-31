@@ -1,0 +1,281 @@
+import cv2
+import numpy as np
+import torch
+import torch.nn as nn
+
+class SkeletonExtractor:
+    """
+    Module for extracting skeletal information from detected humans
+    Using pose estimation techniques
+    """
+    
+    def __init__(self, model_type='openpose', device='cuda'):
+        """
+        Initialize skeleton extractor
+        
+        Args:
+            model_type: Type of pose estimation model ('openpose', 'hrnet', etc.)
+            device: Device to run model on
+        """
+        self.model_type = model_type
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        
+        # Define skeleton keypoint connections (COCO format)
+        self.skeleton_connections = [
+            (0, 1), (0, 2), (1, 3), (2, 4),  # Head
+            (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),  # Arms
+            (5, 11), (6, 12), (11, 12),  # Torso
+            (11, 13), (13, 15), (12, 14), (14, 16)  # Legs
+        ]
+        
+        # Keypoint names (COCO 17 keypoints)
+        self.keypoint_names = [
+            'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
+            'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+            'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+            'left_knee', 'right_knee', 'left_ankle', 'right_ankle'
+        ]
+        
+        # Load pose estimation model
+        self.model = self._load_pose_model()
+        
+    def _load_pose_model(self):
+        """
+        Load pre-trained pose estimation model
+        """
+        model = PoseEstimationNet()
+        model.to(self.device)
+        model.eval()
+        return model
+    
+    def extract_keypoints(self, segmented_human):
+        """
+        Extract keypoints from segmented human image
+        
+        Args:
+            segmented_human: Segmented human region
+            
+        Returns:
+            Array of keypoints (17, 3) - (x, y, confidence)
+        """
+        # Preprocess image
+        input_tensor = self._preprocess_image(segmented_human)
+        
+        # Run pose estimation
+        with torch.no_grad():
+            heatmaps = self.model(input_tensor)
+        
+        # Extract keypoints from heatmaps
+        keypoints = self._extract_keypoints_from_heatmaps(heatmaps, segmented_human.shape)
+        
+        return keypoints
+    
+    def _preprocess_image(self, image):
+        """
+        Preprocess image for pose estimation
+        """
+        # Resize to model input size
+        resized = cv2.resize(image, (256, 256))
+        
+        # Convert to RGB if grayscale
+        if len(resized.shape) == 2:
+            resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+        
+        # Normalize
+        normalized = resized.astype(np.float32) / 255.0
+        normalized = (normalized - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+        
+        # Convert to tensor
+        tensor = torch.from_numpy(normalized.transpose(2, 0, 1)).unsqueeze(0)
+        tensor = tensor.to(self.device)
+        
+        return tensor
+    
+    def _extract_keypoints_from_heatmaps(self, heatmaps, original_shape):
+        """
+        Extract keypoint coordinates from heatmaps
+        
+        Args:
+            heatmaps: Output heatmaps from pose model
+            original_shape: Original image shape for scaling
+            
+        Returns:
+            Keypoints array (17, 3)
+        """
+        heatmaps = heatmaps.cpu().numpy()[0]  # Remove batch dimension
+        
+        keypoints = np.zeros((17, 3))  # 17 keypoints, (x, y, confidence)
+        
+        h_orig, w_orig = original_shape[:2]
+        h_map, w_map = heatmaps.shape[1], heatmaps.shape[2]
+        
+        for i in range(17):
+            heatmap = heatmaps[i]
+            
+            # Find maximum confidence location
+            confidence = np.max(heatmap)
+            y_idx, x_idx = np.unravel_index(np.argmax(heatmap), heatmap.shape)
+            
+            # Scale to original image size
+            x = (x_idx / w_map) * w_orig
+            y = (y_idx / h_map) * h_orig
+            
+            keypoints[i] = [x, y, confidence]
+        
+        return keypoints
+    
+    def create_skeleton_representation(self, keypoints):
+        """
+        Create skeleton representation from keypoints
+        
+        Args:
+            keypoints: Array of keypoints (17, 3)
+            
+        Returns:
+            Skeleton data structure
+        """
+        skeleton = {
+            'keypoints': keypoints,
+            'connections': self.skeleton_connections,
+            'keypoint_names': self.keypoint_names,
+            'valid': np.sum(keypoints[:, 2] > 0.3) >= 10  # At least 10 visible keypoints
+        }
+        
+        return skeleton
+    
+    def visualize_skeleton(self, image, skeleton, thickness=2):
+        """
+        Visualize skeleton on image
+        
+        Args:
+            image: Input image
+            skeleton: Skeleton data structure
+            thickness: Line thickness
+            
+        Returns:
+            Image with skeleton overlay
+        """
+        vis_image = image.copy()
+        keypoints = skeleton['keypoints']
+        
+        # Draw connections
+        for connection in skeleton['connections']:
+            pt1_idx, pt2_idx = connection
+            
+            if keypoints[pt1_idx, 2] > 0.3 and keypoints[pt2_idx, 2] > 0.3:
+                pt1 = tuple(keypoints[pt1_idx, :2].astype(int))
+                pt2 = tuple(keypoints[pt2_idx, :2].astype(int))
+                
+                cv2.line(vis_image, pt1, pt2, (0, 255, 0), thickness)
+        
+        # Draw keypoints
+        for i, kp in enumerate(keypoints):
+            if kp[2] > 0.3:  # Confidence threshold
+                center = tuple(kp[:2].astype(int))
+                cv2.circle(vis_image, center, 4, (0, 0, 255), -1)
+        
+        return vis_image
+    
+    def extract_skeletons_from_detections(self, detection_results):
+        """
+        Extract skeletons from all detected humans
+        
+        Args:
+            detection_results: Results from human detection module
+            
+        Returns:
+            List of skeletons for each frame
+        """
+        all_skeletons = []
+        
+        print("Extracting skeletal information...")
+        
+        for frame_idx, frame_detections in enumerate(detection_results):
+            frame_skeletons = []
+            
+            for detection in frame_detections:
+                segmented = detection['segmented']
+                
+                # Extract keypoints
+                keypoints = self.extract_keypoints(segmented)
+                
+                # Create skeleton representation
+                skeleton = self.create_skeleton_representation(keypoints)
+                skeleton['bbox'] = detection['bbox']
+                
+                frame_skeletons.append(skeleton)
+            
+            all_skeletons.append(frame_skeletons)
+            
+            if (frame_idx + 1) % 10 == 0:
+                print(f"Extracted skeletons from {frame_idx + 1}/{len(detection_results)} frames")
+        
+        print("Skeleton extraction complete")
+        return all_skeletons
+
+
+class PoseEstimationNet(nn.Module):
+    """
+    CNN architecture for pose estimation
+    Simplified version - in practice use HRNet, OpenPose, or similar
+    """
+    
+    def __init__(self, num_keypoints=17):
+        super(PoseEstimationNet, self).__init__()
+        
+        self.num_keypoints = num_keypoints
+        
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 64, 7, stride=2, padding=3),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),
+            
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2)
+        )
+        
+        # Decoder (to generate heatmaps)
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            
+            nn.ConvTranspose2d(64, num_keypoints, 4, stride=2, padding=1),
+            nn.Sigmoid()  # Heatmaps in [0, 1]
+        )
+    
+    def forward(self, x):
+        features = self.encoder(x)
+        heatmaps = self.decoder(features)
+        return heatmaps
+
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize skeleton extractor
+    extractor = SkeletonExtractor(model_type='openpose', device='cuda')
+    
+    # Load detection results from previous module
+    detection_results = []  # Load from human detection module
+    
+    # Extract skeletons
+    skeletons = extractor.extract_skeletons_from_detections(detection_results)
+    
+    print(f"Extracted skeletons from {len(skeletons)} frames")
+    
+    # Visualize first skeleton
+    if len(skeletons) > 0 and len(skeletons[0]) > 0:
+        print(f"First frame has {len(skeletons[0])} detected humans")

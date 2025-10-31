@@ -1,0 +1,327 @@
+import numpy as np
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.preprocessing import StandardScaler
+import joblib
+
+class LDAFeatureOptimizer:
+    """
+    Linear Discriminant Analysis (LDA) for feature optimization
+    Reduces dimensionality while maximizing class separability
+    """
+    
+    def __init__(self, n_components=None, solver='svd'):
+        """
+        Initialize LDA optimizer
+        
+        Args:
+            n_components: Number of components to keep (None = min(n_classes-1, n_features))
+            solver: LDA solver ('svd', 'lsqr', 'eigen')
+        """
+        self.n_components = n_components
+        self.solver = solver
+        self.lda = None
+        self.scaler = StandardScaler()
+        self.is_fitted = False
+        
+    def fit(self, X, y):
+        """
+        Fit LDA on training features
+        
+        Args:
+            X: Feature matrix (n_samples, n_features)
+            y: Class labels (n_samples,)
+            
+        Returns:
+            self
+        """
+        print(f"Fitting LDA on {X.shape[0]} samples with {X.shape[1]} features...")
+        
+        # Standardize features
+        X_scaled = self.scaler.fit_transform(X)
+        
+        # Initialize and fit LDA
+        n_classes = len(np.unique(y))
+        
+        if self.n_components is None:
+            # Maximum number of components is min(n_classes - 1, n_features)
+            max_components = min(n_classes - 1, X_scaled.shape[1])
+            self.n_components = max_components
+        
+        self.lda = LinearDiscriminantAnalysis(
+            n_components=self.n_components,
+            solver=self.solver
+        )
+        
+        self.lda.fit(X_scaled, y)
+        self.is_fitted = True
+        
+        # Calculate explained variance ratio
+        explained_var = self.lda.explained_variance_ratio_
+        cumulative_var = np.cumsum(explained_var)
+        
+        print(f"LDA fitting complete. Components: {self.n_components}")
+        print(f"Explained variance: {cumulative_var[-1]:.4f}")
+        
+        return self
+    
+    def transform(self, X):
+        """
+        Transform features using fitted LDA
+        
+        Args:
+            X: Feature matrix (n_samples, n_features)
+            
+        Returns:
+            Transformed features (n_samples, n_components)
+        """
+        if not self.is_fitted:
+            raise ValueError("LDA must be fitted before transform. Call fit() first.")
+        
+        # Standardize features
+        X_scaled = self.scaler.transform(X)
+        
+        # Apply LDA transformation
+        X_transformed = self.lda.transform(X_scaled)
+        
+        return X_transformed
+    
+    def fit_transform(self, X, y):
+        """
+        Fit LDA and transform features in one step
+        
+        Args:
+            X: Feature matrix (n_samples, n_features)
+            y: Class labels (n_samples,)
+            
+        Returns:
+            Transformed features (n_samples, n_components)
+        """
+        self.fit(X, y)
+        return self.transform(X)
+    
+    def get_discriminant_components(self):
+        """
+        Get the discriminant components (projection matrix)
+        
+        Returns:
+            Array of shape (n_features, n_components)
+        """
+        if not self.is_fitted:
+            raise ValueError("LDA must be fitted first.")
+        
+        return self.lda.scalings_
+    
+    def get_explained_variance_ratio(self):
+        """
+        Get explained variance ratio for each component
+        
+        Returns:
+            Array of explained variance ratios
+        """
+        if not self.is_fitted:
+            raise ValueError("LDA must be fitted first.")
+        
+        return self.lda.explained_variance_ratio_
+    
+    def save_model(self, filepath):
+        """
+        Save fitted LDA model
+        
+        Args:
+            filepath: Path to save model
+        """
+        if not self.is_fitted:
+            raise ValueError("Cannot save unfitted model.")
+        
+        model_data = {
+            'lda': self.lda,
+            'scaler': self.scaler,
+            'n_components': self.n_components,
+            'solver': self.solver
+        }
+        
+        joblib.dump(model_data, filepath)
+        print(f"LDA model saved to {filepath}")
+    
+    def load_model(self, filepath):
+        """
+        Load fitted LDA model
+        
+        Args:
+            filepath: Path to load model from
+        """
+        model_data = joblib.load(filepath)
+        
+        self.lda = model_data['lda']
+        self.scaler = model_data['scaler']
+        self.n_components = model_data['n_components']
+        self.solver = model_data['solver']
+        self.is_fitted = True
+        
+        print(f"LDA model loaded from {filepath}")
+    
+    def optimize_features_batch(self, feature_list, labels):
+        """
+        Optimize features for multiple gesture sequences
+        
+        Args:
+            feature_list: List of feature vectors for different sequences
+            labels: Corresponding gesture labels
+            
+        Returns:
+            Optimized features
+        """
+        # Stack all features
+        X = np.vstack(feature_list)
+        y = np.array(labels)
+        
+        print(f"Optimizing {len(feature_list)} feature sequences...")
+        print(f"Original feature dimension: {X.shape[1]}")
+        
+        # Fit and transform
+        X_optimized = self.fit_transform(X, y)
+        
+        print(f"Optimized feature dimension: {X_optimized.shape[1]}")
+        
+        return X_optimized, y
+    
+    def visualize_feature_importance(self):
+        """
+        Get feature importance based on LDA weights
+        
+        Returns:
+            Feature importance scores
+        """
+        if not self.is_fitted:
+            raise ValueError("LDA must be fitted first.")
+        
+        # Get absolute values of the first discriminant component
+        components = self.lda.scalings_[:, 0]
+        importance = np.abs(components)
+        
+        # Normalize to [0, 1]
+        importance = importance / np.max(importance)
+        
+        return importance
+
+
+class FeatureOptimizationPipeline:
+    """
+    Complete pipeline for feature optimization
+    """
+    
+    def __init__(self, n_components=None):
+        """
+        Initialize optimization pipeline
+        
+        Args:
+            n_components: Number of LDA components
+        """
+        self.optimizer = LDAFeatureOptimizer(n_components=n_components)
+        
+    def prepare_training_data(self, all_features, gesture_labels):
+        """
+        Prepare features for LDA optimization
+        
+        Args:
+            all_features: List of feature dictionaries from feature extractor
+            gesture_labels: List of gesture labels
+            
+        Returns:
+            Feature matrix and labels
+        """
+        feature_vectors = []
+        
+        print("Preparing training data...")
+        
+        for features in all_features:
+            # Combine all feature types
+            combined = []
+            
+            for key in ['joint_angles', 'displacements', 'velocities', 
+                       'fiducial_points', 'geodesic_distances', 'hog_features']:
+                if key in features and len(features[key]) > 0:
+                    feat = features[key]
+                    
+                    # Aggregate temporal features (e.g., mean, std)
+                    if len(feat.shape) > 1:
+                        mean_feat = np.mean(feat, axis=0)
+                        std_feat = np.std(feat, axis=0)
+                        combined.extend(mean_feat)
+                        combined.extend(std_feat)
+                    else:
+                        combined.extend(feat)
+            
+            feature_vectors.append(np.array(combined))
+        
+        X = np.array(feature_vectors)
+        y = np.array(gesture_labels)
+        
+        print(f"Prepared {X.shape[0]} samples with {X.shape[1]} features")
+        
+        return X, y
+    
+    def optimize_features(self, all_features, gesture_labels, save_path=None):
+        """
+        Complete feature optimization workflow
+        
+        Args:
+            all_features: List of feature dictionaries
+            gesture_labels: List of gesture labels
+            save_path: Optional path to save optimized model
+            
+        Returns:
+            Optimized features and labels
+        """
+        # Prepare data
+        X, y = self.prepare_training_data(all_features, gesture_labels)
+        
+        # Optimize with LDA
+        X_optimized = self.optimizer.fit_transform(X, y)
+        
+        # Save model if path provided
+        if save_path:
+            self.optimizer.save_model(save_path)
+        
+        # Print statistics
+        print("\nOptimization Summary:")
+        print(f"Original dimensions: {X.shape[1]}")
+        print(f"Optimized dimensions: {X_optimized.shape[1]}")
+        
+        var_ratio = self.optimizer.get_explained_variance_ratio()
+        print(f"Cumulative explained variance: {np.sum(var_ratio):.4f}")
+        
+        return X_optimized, y
+
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize optimization pipeline
+    pipeline = FeatureOptimizationPipeline(n_components=50)
+    
+    # Load features from feature extraction module
+    all_features = []  # List of feature dictionaries
+    gesture_labels = []  # Corresponding gesture labels (0, 1, 2, ...)
+    
+    # Example: Create dummy data
+    for i in range(100):
+        dummy_features = {
+            'joint_angles': np.random.rand(30, 6),
+            'displacements': np.random.rand(30, 17),
+            'velocities': np.random.rand(30, 17),
+            'fiducial_points': np.random.rand(30, 18),
+            'geodesic_distances': np.random.rand(30, 6),
+            'hog_features': np.random.rand(30, 1764)
+        }
+        all_features.append(dummy_features)
+        gesture_labels.append(i % 10)  # 10 gesture classes
+    
+    # Optimize features
+    X_optimized, y = pipeline.optimize_features(
+        all_features, 
+        gesture_labels,
+        save_path='lda_model.pkl'
+    )
+    
+    print(f"\nOptimized feature shape: {X_optimized.shape}")
+    print(f"Number of gesture classes: {len(np.unique(y))}")
